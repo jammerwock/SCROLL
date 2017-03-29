@@ -6,16 +6,18 @@ val slf4jVersion = "1.7.21"
 val macrosVersion = "2.1.0"
 val scalaloggingVersion = "3.5.0"
 val guavaVersion = "20.0"
+val jgraphTVersion = "1.0.0"
 
 lazy val commonSettings = Seq(
   scalaVersion := "2.12.0",
-  version := "1.1.0",
+  version := "1.3.0",
   mainClass := None,
   resolvers ++= Seq(
     "Sonatype OSS Snapshots" at "https://oss.sonatype.org/content/repositories/snapshots",
     "Sonatype OSS Releases" at "https://oss.sonatype.org/content/repositories/releases"
   ),
   libraryDependencies ++= Seq(
+    "org.jgrapht" % "jgrapht-core" % jgraphTVersion,
     "com.google.guava" % "guava" % guavaVersion,
     "com.typesafe.akka" %% "akka-actor" % akkaVersion,
     "com.chuusai" %% "shapeless" % shapelessVersion,
@@ -95,7 +97,6 @@ lazy val tests = (project in file("tests")).
   settings(commonSettings: _*).
   settings(
     testOptions in Test := Seq(Tests.Filter(s => s.endsWith("Suite"))),
-    logBuffered in Test := false,
     parallelExecution in Test := false,
     libraryDependencies ++= Seq("org.scalatest" %% "scalatest" % scalatestVersion % "test")
   ).dependsOn(core, examples)

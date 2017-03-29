@@ -1,49 +1,45 @@
 package scroll.internal.graph
 
+import com.google.common.graph.{GraphBuilder, Graphs}
 import scroll.internal.support.DispatchQuery
 
-import scala.collection.mutable
-import scala.reflect.runtime.universe._
-
-object ScalaRoleGraph {
-
-  sealed trait Node
-
-  case class RolePlayingGraphRoot(players: mutable.ListBuffer[Player]) extends Node
-
-  case class Player(core: Any, role: Any) extends Node {
-    override def equals(other: scala.Any): Boolean = other match {
-      case Player(c, r) if r != null => core == c && role == c
-      case Player(c, r) if r == null => core == c
-      case _ => false
-    }
-
-    override def hashCode(): Int = core.hashCode()
-  }
-
-}
+import scala.reflect.ClassTag
+import collection.JavaConverters._
 
 /**
   * Scala specific implementation of a [[scroll.internal.graph.RoleGraph]] using
-  * a simple ListBuffer as underlying data model.
+  * a graph as underlying data model.
   *
   * @param checkForCycles set to true to forbid cyclic role playing relationships
   */
 class ScalaRoleGraph(checkForCycles: Boolean = true) extends RoleGraph {
 
-  import ScalaRoleGraph._
-
-  private val root = RolePlayingGraphRoot(mutable.ListBuffer.empty[Player])
+  private var root = GraphBuilder.directed().build[Object]()
 
   override def merge(other: RoleGraph): Unit = {
     require(null != other)
     require(other.isInstanceOf[ScalaRoleGraph], "You can only merge RoleGraphs of the same type!")
-    other.asInstanceOf[ScalaRoleGraph].root.players.foreach(pl => {
-      root.players.contains(pl) match {
-        case true => addBinding(pl.core.asInstanceOf[AnyRef], pl.role.asInstanceOf[AnyRef])
-        case false => root.players += pl
-      }
-    })
+
+    val source = root
+    val target = other.asInstanceOf[ScalaRoleGraph].root
+
+    if (source.nodes().isEmpty && target.nodes().isEmpty) return
+
+    if (source.nodes().isEmpty && !target.nodes().isEmpty) {
+      root = target
+      checkCycles()
+      return
+    }
+
+    if (!source.nodes().isEmpty && target.nodes().isEmpty) return
+
+    if (source.nodes().size < target.nodes().size) {
+      source.edges().asScala.foreach(p => target.putEdge(p.source(), p.target()))
+      root = target
+    } else {
+      target.edges().asScala.foreach(p => root.putEdge(p.source(), p.target()))
+    }
+    checkCycles()
   }
 
   override def detach(other: RoleGraph): Unit = {
@@ -51,65 +47,45 @@ class ScalaRoleGraph(checkForCycles: Boolean = true) extends RoleGraph {
     other.allPlayers.foreach(pl =>
       other.getRoles(pl).foreach(rl =>
         removeBinding(pl.asInstanceOf[AnyRef], rl.asInstanceOf[AnyRef])))
-    root.players.foreach(removePlayer)
   }
 
-  private def hasCycle(player: Player): Boolean = getRoles(player.core).contains(player.core)
+  private def checkCycles(): Unit = {
+    if (checkForCycles) {
+      if (Graphs.hasCycle(root)) {
+        throw new RuntimeException(s"Cyclic role-playing relationship found!")
+      }
+    }
+  }
 
-  override def addBinding[P <: AnyRef : WeakTypeTag, R <: AnyRef : WeakTypeTag](player: P, role: R): Unit = {
+  override def addBinding[P <: AnyRef : ClassTag, R <: AnyRef : ClassTag](player: P, role: R): Unit = {
     require(null != player)
     require(null != role)
-    root.players += Player(player, role)
-    if (checkForCycles && hasCycle(Player(player, role))) {
+    root.putEdge(player, role)
+    if (checkForCycles && Graphs.hasCycle(root)) {
       throw new RuntimeException(s"Cyclic role-playing relationship for player '$player' found!")
     }
   }
 
-  override def removeBinding[P <: AnyRef : WeakTypeTag, R <: AnyRef : WeakTypeTag](player: P, role: R): Unit = {
+  override def removeBinding[P <: AnyRef : ClassTag, R <: AnyRef : ClassTag](player: P, role: R): Unit = {
     require(null != player)
     require(null != role)
-    root.players.find(p => p.core == player && p.role == role).foreach(root.players -= _)
+    val _ = root.removeEdge(player, role)
   }
 
-  override def removePlayer[P <: AnyRef : WeakTypeTag](player: P): Unit = {
+  override def removePlayer[P <: AnyRef : ClassTag](player: P): Unit = {
     require(null != player)
-    val _ = root.players -= Player(player, null)
-  }
-
-  private def getRoles(player: Player, node: Node): Seq[Any] = node match {
-    case r: RolePlayingGraphRoot => r.players.flatMap(p => getRoles(player, p))
-    case p: Player if p.core == player.core =>
-      val result = mutable.ListBuffer(p.role)
-      var current = p.role
-      while (current != null) {
-        root.players.find(_.core == current) match {
-          case Some(f) if result.contains(f.role) => current = null
-          case Some(f) => current = f.role; result += f.role
-          case _ => current = null
-        }
-      }
-      result
-    case _ => Seq.empty
+    val _ = root.removeNode(player)
   }
 
   override def getRoles(player: Any)(implicit dispatchQuery: DispatchQuery = DispatchQuery.empty): Set[Any] = {
     require(null != player)
-    containsPlayer(player) match {
-      case true => getRoles(Player(player, null), root).toSet
-      case false => Set(player)
-    }
+    Graphs.reachableNodes(root, player).asScala.toSet
   }
 
-  override def containsPlayer(player: Any): Boolean = root.players.exists(p => p.core == player || p.role == player)
+  override def containsPlayer(player: Any): Boolean = root.nodes().contains(player)
 
-  override def allPlayers: Seq[Any] = root.players.flatMap(p => Seq(p.core, p.role)).distinct
-
-  private def getPredecessors(player: Player, node: Node): Seq[Any] = node match {
-    case RolePlayingGraphRoot(players) => players.flatMap(p => getPredecessors(player, p))
-    case Player(core, role) if role == player.core => Seq(core) ++ getPredecessors(core)
-    case _ => Seq.empty
-  }
+  override def allPlayers: Seq[Any] = root.nodes().asScala.toSeq
 
   override def getPredecessors(player: Any)(implicit dispatchQuery: DispatchQuery = DispatchQuery.empty): Seq[Any] =
-    getPredecessors(Player(player, null), root).distinct
+    Graphs.reachableNodes(Graphs.transpose(root), player).asScala.toSeq.tail
 }

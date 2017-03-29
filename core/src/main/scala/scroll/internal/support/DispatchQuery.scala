@@ -9,6 +9,23 @@ import scroll.internal.support.DispatchQuery._
 object DispatchQuery {
 
   /**
+    * Use this in [[DispatchQuery.sortedWith]] to state that no sorting between the objects in comparison should happen.
+    */
+  val identity: Boolean = false
+
+  /**
+    * Use this in [[DispatchQuery.sortedWith]] to state that always swapping between the objects in comparison should happen.
+    */
+  val swap: Boolean = true
+
+  /**
+    * Function to use in [[DispatchQuery.sortedWith]] to simply reverse the set of resulting edges.
+    */
+  val reverse: PartialFunction[(Any, Any), Boolean] = {
+    case (_, _) => swap
+  }
+
+  /**
     * Function always returning true
     */
   val anything: Any => Boolean = _ => true
@@ -39,9 +56,10 @@ object DispatchQuery {
     * @param empty if set to true, the path will be returned unmodified
     */
   private class From(val sel: Any => Boolean, empty: Boolean = false) extends (Seq[Any] => Seq[Any]) {
-    override def apply(edges: Seq[Any]): Seq[Any] = empty match {
-      case true => edges
-      case false => edges.slice(edges.indexWhere(sel), edges.size)
+    override def apply(edges: Seq[Any]): Seq[Any] = if (empty) {
+      edges
+    } else {
+      edges.slice(edges.indexWhere(sel), edges.size)
     }
   }
 
@@ -53,13 +71,13 @@ object DispatchQuery {
     * @param empty if set to true, the path will be returned unmodified
     */
   private class To(val sel: Any => Boolean, empty: Boolean = false) extends (Seq[Any] => Seq[Any]) {
-    override def apply(edges: Seq[Any]): Seq[Any] = empty match {
-      case true => edges
-      case false =>
-        edges.lastIndexWhere(sel) match {
-          case -1 => edges
-          case _ => edges.slice(0, edges.lastIndexWhere(sel) + 1)
-        }
+    override def apply(edges: Seq[Any]): Seq[Any] = if (empty) {
+      edges
+    } else {
+      edges.lastIndexWhere(sel) match {
+        case -1 => edges
+        case _ => edges.slice(0, edges.lastIndexWhere(sel) + 1)
+      }
     }
   }
 
@@ -71,9 +89,10 @@ object DispatchQuery {
     * @param empty if set to true, the path will be returned unmodified
     */
   private class Through(sel: Any => Boolean, empty: Boolean = false) extends (Seq[Any] => Seq[Any]) {
-    override def apply(edges: Seq[Any]): Seq[Any] = empty match {
-      case true => edges
-      case false => edges.filter(sel)
+    override def apply(edges: Seq[Any]): Seq[Any] = if (empty) {
+      edges
+    } else {
+      edges.filter(sel)
     }
   }
 
@@ -85,9 +104,10 @@ object DispatchQuery {
     * @param empty if set to true, the path will be returned unmodified
     */
   private class Bypassing(sel: Any => Boolean, empty: Boolean = false) extends (Seq[Any] => Seq[Any]) {
-    override def apply(edges: Seq[Any]): Seq[Any] = empty match {
-      case true => edges
-      case false => edges.filterNot(sel)
+    override def apply(edges: Seq[Any]): Seq[Any] = if (empty) {
+      edges
+    } else {
+      edges.filterNot(sel)
     }
   }
 
@@ -95,7 +115,7 @@ object DispatchQuery {
 
 /**
   * Composed dispatch query, i.e. applying the composition of all dispatch queries the given set of edges
-  * through the function ''reorder''.
+  * through the function [[DispatchQuery.filter]].
   * All provided queries must be side-effect free!
   *
   * @param from      query selecting the starting element for the role dispatch query
@@ -108,11 +128,31 @@ class DispatchQuery(
                      to: To,
                      through: Through,
                      bypassing: Bypassing,
-                     private val empty: Boolean = false) {
+                     private val empty: Boolean = false,
+                     private var _sortedWith: Option[(Any, Any) => Boolean] = Option.empty
+                   ) {
   def isEmpty: Boolean = empty
 
-  def reorder(anys: Seq[Any]): Seq[Any] = isEmpty match {
-    case true => anys.distinct.reverse
-    case false => from.andThen(to).andThen(through).andThen(bypassing)(anys.distinct).reverse
+  /**
+    * Set the function to later sort all dynamic extensions during [[DispatchQuery.filter]].
+    *
+    * @param f the sorting function
+    * @return this
+    */
+  def sortedWith(f: PartialFunction[(Any, Any), Boolean]): DispatchQuery = {
+    _sortedWith = Some({ case (a, b) => f.applyOrElse((a, b), (_: (Any, Any)) => identity) })
+    this
+  }
+
+  def filter(anys: Seq[Any]): Seq[Any] = {
+    val r = if (isEmpty) {
+      anys.distinct.reverse
+    } else {
+      from.andThen(to).andThen(through).andThen(bypassing)(anys.distinct).reverse
+    }
+    _sortedWith match {
+      case Some(f) => r.sortWith(f)
+      case None => r
+    }
   }
 }
